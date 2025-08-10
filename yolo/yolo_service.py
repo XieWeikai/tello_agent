@@ -6,9 +6,13 @@ import sys
 from concurrent import futures
 from io import BytesIO
 
+import dotenv
 import grpc
 import torch
 from PIL import Image
+
+dotenv.load_dotenv()
+
 from ultralytics import YOLO
 
 PARENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # tello_agent
@@ -19,6 +23,9 @@ SERVICE_PORT = [port.strip() for port in os.environ.get("YOLO_SERVICE_PORT", "50
 YOLO_PATH = os.path.join(ROOT_PATH, "yolo") # tello_agent/yolo
 if YOLO_PATH not in sys.path:
     sys.path.append(YOLO_PATH)
+
+if ROOT_PATH not in sys.path:
+    sys.path.append(ROOT_PATH)
 
 MODEL_PATH = os.path.join(ROOT_PATH, "models")
 MODEL_TYPE = "yolov8x.pt"
