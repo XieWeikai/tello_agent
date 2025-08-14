@@ -76,10 +76,6 @@ keepalive_thread = threading.Thread(target=keep_drone_alive)
 keepalive_thread.daemon = True
 keepalive_thread.start()
 
-# 启动视频流线程
-# video_thread = threading.Thread(target=tello_live_feed)
-# video_thread.daemon = True
-# video_thread.start()
 
 def update_screenshot(memory_step: ActionStep, agent: CodeAgent) -> None:
     """更新agent记忆中的截图"""
@@ -92,10 +88,10 @@ def update_screenshot(memory_step: ActionStep, agent: CodeAgent) -> None:
     # 获取当前帧
     image = drone.get_frame(sharpen=True)
     pil_image = Image.fromarray(image)
-    pil_image.show(title=f"Step {memory_step.step_number}")
+    # pil_image.show(title=f"Step {memory_step.step_number}")
     memory_step.observations_images = [pil_image.copy()]
 
-if __name__ == "__main__":
+def agent_main():
     # read from yaml path
     if USE_CUSTOM_PROMPT and PROMPT_PATH:
         if os.path.exists(PROMPT_PATH):
@@ -127,7 +123,7 @@ if __name__ == "__main__":
     
     task_image = drone.get_frame()
     pil_image = Image.fromarray(task_image)
-    pil_image.show(title="Task Image")
+    # pil_image.show(title="Task Image")
     
     try:
         print("\nStarting agent task...")
@@ -138,5 +134,10 @@ if __name__ == "__main__":
     finally:
         print("\nTask completed. Video feed and keepalive threads will continue running...")
         print("Press Ctrl+C to exit or 'q' in video window to stop video feed")
-    
-    
+        
+agent_main_thread = threading.Thread(target=agent_main)
+agent_main_thread.daemon = True
+agent_main_thread.start()
+
+if __name__ == "__main__":
+    tello_live_feed()
