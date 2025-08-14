@@ -146,3 +146,123 @@ def plot_yolo_res(frame: np.ndarray, yolo_results: List[Dict[str, Any]],
                    font, font_scale, (255, 255, 255), text_thickness)
     
     return result_frame
+
+
+def format_yolo_res(yolo_results: List[Dict[str, Any]], 
+                   conf_threshold: float = 0.5, 
+                   sort_by_confidence: bool = True) -> str:
+    """Format YOLO detection results into a human-readable string.
+    
+    Args:
+        yolo_results: List of detection dictionaries containing name, confidence, and box coordinates.
+            Each detection should have the format:
+            {
+                'name': str,
+                'confidence': float,
+                'box': {'x1': float, 'y1': float, 'x2': float, 'y2': float}
+            }
+        conf_threshold: Confidence threshold for including detections in the output.
+        sort_by_confidence: Whether to sort detections by confidence in descending order.
+    
+    Returns:
+        Formatted string containing detection information.
+    """
+    if not yolo_results or len(yolo_results) == 0:
+        return "No objects detected."
+    
+    # Filter detections by confidence threshold
+    filtered_detections = [
+        detection for detection in yolo_results 
+        if detection.get('confidence', 0.0) >= conf_threshold
+    ]
+    
+    if not filtered_detections:
+        return f"No objects detected above confidence threshold {conf_threshold:.2f}."
+    
+    # Sort by confidence if requested
+    if sort_by_confidence:
+        filtered_detections.sort(key=lambda x: x.get('confidence', 0.0), reverse=True)
+    
+    # Count objects by class
+    class_counts = {}
+    for detection in filtered_detections:
+        class_name = detection.get('name', 'unknown').split('_')[0]  # Remove ID suffix
+        class_counts[class_name] = class_counts.get(class_name, 0) + 1
+    
+    # Build formatted string
+    result_lines = []
+    
+    # Summary line
+    total_objects = len(filtered_detections)
+    unique_classes = len(class_counts)
+    result_lines.append(f"Detection Summary: {total_objects} objects detected ({unique_classes} unique classes)")
+    result_lines.append("=" * 60)
+    
+    # Class summary
+    result_lines.append("Object Count by Class:")
+    for class_name, count in sorted(class_counts.items()):
+        result_lines.append(f"  • {class_name}: {count}")
+    result_lines.append("")
+    
+    # Detailed detection list
+    result_lines.append("Detailed Detection Results:")
+    result_lines.append("-" * 40)
+    
+    for i, detection in enumerate(filtered_detections, 1):
+        name = detection.get('name', 'unknown')
+        confidence = detection.get('confidence', 0.0)
+        box = detection.get('box', {})
+        
+        # Extract box coordinates
+        x1 = box.get('x1', 0.0)
+        y1 = box.get('y1', 0.0)
+        x2 = box.get('x2', 0.0)
+        y2 = box.get('y2', 0.0)
+        
+        # Calculate box center and size
+        center_x = (x1 + x2) / 2
+        center_y = (y1 + y2) / 2
+        width = x2 - x1
+        height = y2 - y1
+        area = width * height
+        
+        # Format detection info
+        result_lines.append(f"{i:2d}. {name}")
+        result_lines.append(f"    Confidence: {confidence:.1%}")
+        result_lines.append(f"    Position: Center({center_x:.3f}, {center_y:.3f})")
+        result_lines.append(f"    Size: {width:.3f} × {height:.3f} (Area: {area:.3f})")
+        result_lines.append(f"    Bounding Box: ({x1:.3f}, {y1:.3f}) → ({x2:.3f}, {y2:.3f})")
+        
+        # Add position description
+        pos_desc = []
+        if center_x < 0.33:
+            pos_desc.append("left")
+        elif center_x > 0.67:
+            pos_desc.append("right")
+        else:
+            pos_desc.append("center")
+            
+        if center_y < 0.33:
+            pos_desc.append("top")
+        elif center_y > 0.67:
+            pos_desc.append("bottom")
+        else:
+            pos_desc.append("middle")
+        
+        result_lines.append(f"    Location: {' '.join(pos_desc)} of image")
+        result_lines.append("")
+    
+    # Add statistics
+    if len(filtered_detections) > 1:
+        confidences = [d.get('confidence', 0.0) for d in filtered_detections]
+        avg_conf = sum(confidences) / len(confidences)
+        max_conf = max(confidences)
+        min_conf = min(confidences)
+        
+        result_lines.append("Statistics:")
+        result_lines.append(f"  Average Confidence: {avg_conf:.1%}")
+        result_lines.append(f"  Confidence Range: {min_conf:.1%} - {max_conf:.1%}")
+    
+    return "\n".join(result_lines)
+
+
