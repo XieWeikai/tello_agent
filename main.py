@@ -27,6 +27,9 @@ TEMPERATURE = float(os.environ.get("TEMPERATURE", 0.0))
 
 AGENT_MODE = os.environ.get("AGENT_MODE", "code")
 
+USE_CUSTOM_PROMPT = os.environ.get("USE_CUSTOM_PROMPT", "false").lower() == "true"
+PROMPT_PATH = os.environ.get("PROMPT_PATH", "toolcalling_agent.yaml")
+
 AGENT_CLASS_MAP = {
     "code": CodeAgent,
     "tool": ToolCallingAgent,
@@ -94,14 +97,16 @@ def update_screenshot(memory_step: ActionStep, agent: CodeAgent) -> None:
 
 if __name__ == "__main__":
     # read from yaml path
-    prompt_path = "toolcalling_agent.yaml" if AGENT_MODE == "prompt_tool" else None
-    if prompt_path and os.path.exists(prompt_path):
-        with open(prompt_path, "r") as f:
-            prompt_template = yaml.safe_load(f)
+    if USE_CUSTOM_PROMPT and PROMPT_PATH:
+        if os.path.exists(PROMPT_PATH):
+            with open(PROMPT_PATH, "r") as f:
+                prompt_template = yaml.safe_load(f)
+        else:
+            print(f"Warning: {PROMPT_PATH} not found, using default prompt template")
+            prompt_template = None
     else:
-        print(f"Warning: {prompt_path} not found, using default prompt template")
         prompt_template = None
-        
+
     tools = drone.get_tools()
     
     model = LiteLLMModel(
