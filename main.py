@@ -4,11 +4,19 @@ import time
 
 import cv2
 import dotenv
+import yaml
 from PIL import Image
 from smolagents import (ActionStep, CodeAgent, InferenceClientModel,
                         LiteLLMModel, ToolCallingAgent)
 
 from tello import Drone
+
+
+class MyToolCallingAgent(ToolCallingAgent):
+    @property
+    def tools_and_managed_agents(self):
+        """Returns a combined list of tools and managed agents."""
+        return list(self.managed_agents.values())
 
 dotenv.load_dotenv()
 
@@ -18,9 +26,14 @@ MODEL_NAME = os.environ["MODEL_NAME"]
 TEMPERATURE = float(os.environ.get("TEMPERATURE", 0.0))
 
 AGENT_MODE = os.environ.get("AGENT_MODE", "code")
-assert AGENT_MODE in ["code", "tool"], "AGENT_MODE must be 'code' or 'tool'"
-AGENT_CLS = CodeAgent if AGENT_MODE == "code" else ToolCallingAgent
 
+AGENT_CLASS_MAP = {
+    "code": CodeAgent,
+    "tool": ToolCallingAgent,
+    "prompt_tool": MyToolCallingAgent,
+}
+assert AGENT_MODE in AGENT_CLASS_MAP, "AGENT_MODE must be one of 'code', 'tool', or 'prompt_tool'"
+AGENT_CLS = AGENT_CLASS_MAP[AGENT_MODE]
 
 drone = Drone()
 
@@ -32,7 +45,7 @@ def keep_drone_alive():
             print(f"Battery: {battery}%")
         except Exception as e:
             print(f"Keepalive error: {e}")
-        time.sleep(10)
+        time.sleep(2)
 
 def tello_live_feed():
     """视频流显示线程"""
@@ -61,9 +74,9 @@ keepalive_thread.daemon = True
 keepalive_thread.start()
 
 # 启动视频流线程
-video_thread = threading.Thread(target=tello_live_feed)
-video_thread.daemon = True
-video_thread.start()
+# video_thread = threading.Thread(target=tello_live_feed)
+# video_thread.daemon = True
+# video_thread.start()
 
 def update_screenshot(memory_step: ActionStep, agent: CodeAgent) -> None:
     """更新agent记忆中的截图"""
@@ -74,32 +87,38 @@ def update_screenshot(memory_step: ActionStep, agent: CodeAgent) -> None:
             previous_memory_step.observations_images = None
     
     # 获取当前帧
-    image = drone.get_frame(sharpen=True)  # 使用锐化后的帧用于AI分析
+    image = drone.get_frame(sharpen=True)
     pil_image = Image.fromarray(image)
     pil_image.show(title=f"Step {memory_step.step_number}")
     memory_step.observations_images = [pil_image.copy()]
 
 if __name__ == "__main__":
-    print("Initializing Tello Agent...")
-    print("Video feed window will open automatically")
-    print("Press 'q' in the video window to stop video feed")
-    
+    # read from yaml path
+    prompt_path = "toolcalling_agent.yaml" if AGENT_MODE == "prompt_tool" else None
+    if prompt_path and os.path.exists(prompt_path):
+        with open(prompt_path, "r") as f:
+            prompt_template = yaml.safe_load(f)
+    else:
+        print(f"Warning: {prompt_path} not found, using default prompt template")
+        prompt_template = None
+        
     tools = drone.get_tools()
     
     model = LiteLLMModel(
         model_id=MODEL_NAME,
         api_base=BASE_URL,
         api_key=API_KEY,
-        temperature=TEMPERATURE,  
+        # temperature=TEMPERATURE,  
     )
 
     agent = AGENT_CLS(
         tools=tools,
         model=model,
-        step_callbacks=[update_screenshot])
+        step_callbacks=[update_screenshot],
+        prompt_templates=prompt_template,
+    )
     
-    print("System prompt:")
-    print(agent.memory.system_prompt.system_prompt)
+    print(f"{agent.memory.system_prompt.system_prompt}")
     
     task_image = drone.get_frame()
     pil_image = Image.fromarray(task_image)
@@ -107,11 +126,12 @@ if __name__ == "__main__":
     
     try:
         print("\nStarting agent task...")
-        agent.run("你背后有个白板，你看看上面有什么字，看不到的话你需要找到这个字", images=[pil_image])
+        agent.run("起飞后旋转180°说说看到了什么，然后降落", images=[pil_image])
     except Exception as e:
         print(f"Error occurred: {e}")
         agent.replay()
     finally:
         print("\nTask completed. Video feed and keepalive threads will continue running...")
         print("Press Ctrl+C to exit or 'q' in video window to stop video feed")
+    
     

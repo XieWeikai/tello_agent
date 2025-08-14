@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 from djitellopy import Tello
 from smolagents import tool
+
 from utils import vision
 
 
@@ -235,6 +236,16 @@ class Drone:
         """
         with self.drone_lock:
             return self.drone.get_battery()
+    
+    def set_speed(self, speed: int) -> None:
+        """
+        Set the drone's speed.
+        
+        Args:
+            speed (int): Speed in cm/s (10-100)
+        """
+        with self.drone_lock:
+            self.drone.set_speed(speed)
         
 
 @expose_methods_as_tools()
