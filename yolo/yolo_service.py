@@ -28,13 +28,13 @@ if ROOT_PATH not in sys.path:
     sys.path.append(ROOT_PATH)
 
 MODEL_PATH = os.path.join(ROOT_PATH, "models")
-MODEL_TYPE = "yolov8x.pt"
+MODEL_TYPE = "yolo11n.pt"
 
 from yolo import yolo_pb2, yolo_pb2_grpc
 
 
 def load_model():
-    model = YOLO(MODEL_PATH + MODEL_TYPE)
+    model = YOLO(os.path.join(MODEL_PATH, MODEL_TYPE))
     if torch.cuda.is_available():
         device = torch.device('cuda:0')
     else:
@@ -96,7 +96,7 @@ class YoloService(yolo_pb2_grpc.YoloServiceServicer):
     
     def process_image(self, image, id=None, conf=0.3):
         if self.stream_mode:
-            yolo_result = self.model.track(image, verbose=False, conf=conf, tracker="bytetrack.yaml")[0]
+            yolo_result = self.model.track(image, verbose=False, conf=conf, tracker="bytetrack.yaml", persist=True)[0]
         else:
             yolo_result = self.model(image, verbose=False, conf=conf)[0]
         result = {

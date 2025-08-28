@@ -13,19 +13,19 @@ yolo_client = YoloGRPCClient()
 
 drone = Drone()
 
-GAINS_YAW = dict(kp=150.0, ki=0.0, kd=0.0)   
-GAINS_Z   = dict(kp=100.0, ki=0.02, kd=5.0)   # up/down
-GAINS_FB  = dict(kp=100.0, ki=0.01, kd=15.0) # forward/backward
+GAINS_YAW = dict(kp=150.0, ki=0.002, kd=15.0)   
+GAINS_Z   = dict(kp=100.0, ki=0.002, kd=15.0)   # up/down
+GAINS_FB  = dict(kp=80.0, ki=0.002, kd=15.0) # forward/backward
 
-AREA_DESIRED = 0.4  # Desired area of the object in the frame (normalized, e.g., 0.4 means 40% of frame area)
+AREA_DESIRED = 0.2  # Desired area of the object in the frame (normalized, e.g., 0.4 means 40% of frame area)
 
 YAW_DEADBAND = 0.003
 Z_DEADBAND = 0.003
 FB_DEADBAND = 0.003
 
-FPS = 2
+FPS = 30
 
-OBJ_NAME = "teddy"
+OBJ_NAME = "person" # "person" # "person" # "scissor"
 
 frame_state = (None, None)  # (frame, detections)
 
@@ -58,11 +58,11 @@ def get_bbox(detections, class_name=OBJ_NAME):
     return None
 
 def track_obj(fps=FPS, obj_name=OBJ_NAME):
-    # global is_take_off
-    # if not is_take_off:
-    #     drone.take_off()
-    #     is_take_off = True
-    #     time.sleep(1)
+    global is_take_off
+    if not is_take_off:
+        drone.take_off()
+        is_take_off = True
+        time.sleep(1)
     
     start_time = time.time()
     
@@ -82,7 +82,7 @@ def track_obj(fps=FPS, obj_name=OBJ_NAME):
             continue
 
         bbox = get_bbox(detections, class_name=obj_name)
-        print(f"detections: {detections}")
+        # print(f"detections: {detections}")
         print(f"{obj_name} bbox: {bbox}")
 
         if bbox:
@@ -93,8 +93,8 @@ def track_obj(fps=FPS, obj_name=OBJ_NAME):
 
             # Compute errors for PID controllers
             err_yaw = cx - 0.5 if abs(cx - 0.5) > YAW_DEADBAND else 0.0  # Horizontal error (normalized)
-            err_z = cy - 0.5 if abs(cy - 0.5) > Z_DEADBAND else 0.0  # Vertical error (normalized)
-            err_fb = area - AREA_DESIRED if abs(area - AREA_DESIRED) > FB_DEADBAND else 0.0  # Forward/backward error (area-based)
+            err_z = 0.5 - cy if abs(cy - 0.5) > Z_DEADBAND else 0.0  # Vertical error (normalized)
+            err_fb = AREA_DESIRED - area if abs(area - AREA_DESIRED) > FB_DEADBAND else 0.0  # Forward/backward error (area-based)
 
             # Update PID controllers
             yaw_output = yaw_pid.step(err_yaw, dt=dt)
@@ -106,8 +106,9 @@ def track_obj(fps=FPS, obj_name=OBJ_NAME):
             fb_output = 0 if err_fb == 0.0 else fb_output
             
             # just test yaw for now
-            z_output = 0
-            fb_output = 0
+            # yaw_output = 0
+            # z_output = 0
+            # fb_output = 0
 
             # Send commands to drone
             if is_take_off:
@@ -130,6 +131,7 @@ def track_obj(fps=FPS, obj_name=OBJ_NAME):
         
 
 def live_feed(fps=30, plot_detections=True):
+    global is_take_off
     while True:
         frame, detections = frame_state
         if frame is not None:
@@ -145,9 +147,10 @@ def live_feed(fps=30, plot_detections=True):
             cv2.imshow("Live Feed", frame)
 
         if cv2.waitKey(1000 // fps) & 0xFF == ord('q'):
-            drone.land()
-            is_take_off = False
-            print("Landing and exiting live feed")
+            if is_take_off:
+                drone.land()
+                is_take_off = False
+                print("Landing and exiting live feed")
             break
 
     cv2.destroyAllWindows()
