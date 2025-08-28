@@ -242,7 +242,32 @@ class Drone:
         """
         with self.drone_lock:
             return self.drone.get_battery()
-
+    
+    def send_rc_control(self, left_right_velocity: int = 0, forward_backward_velocity: int = 0, 
+                       up_down_velocity: int = 0, yaw_velocity: int = 0):
+        """
+        Send RC control command to drone.
+        
+        Args:
+            left_right_velocity (int): left/right velocity (-100~100)
+            forward_backward_velocity (int): forward/backward velocity (-100~100) 
+            up_down_velocity (int): up/down velocity (-100~100)
+            yaw_velocity (int): yaw velocity (-100~100)
+        """
+        with self.drone_lock:
+            self.drone.send_rc_control(left_right_velocity, forward_backward_velocity, 
+                                     up_down_velocity, yaw_velocity)
+            
+    def get_battery(self) -> int:
+        """
+        Get the current battery percentage.
+        
+        Returns:
+            int: Battery percentage (0-100)
+        """
+        with self.drone_lock:
+            return self.drone.get_battery()
+    
     def set_speed(self, speed: int) -> None:
         """
         Set the drone's speed.

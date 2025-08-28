@@ -13,7 +13,7 @@ DEFAULT_YOLO_LIST = ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus'
 PARENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # tello_agent
 ROOT_PATH = os.environ.get("ROOT_PATH", PARENT_DIR)
 YOLO_PATH = os.path.join(ROOT_PATH, "yolo") # tello_agent/yolo
-print(f"YOLO_PATH: {YOLO_PATH}")
+# print(f"YOLO_PATH: {YOLO_PATH}")
 if YOLO_PATH not in sys.path:
     sys.path.append(YOLO_PATH)
 

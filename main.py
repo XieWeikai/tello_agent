@@ -6,13 +6,8 @@ import cv2
 import dotenv
 import yaml
 from PIL import Image
-from smolagents import (
-    ActionStep,
-    CodeAgent,
-    InferenceClientModel,
-    LiteLLMModel,
-    ToolCallingAgent,
-)
+from smolagents import (ActionStep, CodeAgent, InferenceClientModel,
+                        LiteLLMModel, ToolCallingAgent)
 
 from tello import Drone, MockDrone
 
@@ -57,12 +52,12 @@ def keep_drone_alive():
     """定期发送keepalive命令防止自动降落"""
     while True:
         try:
-            drone.turn_clockwise(1)
-            # print(f"Battery: {battery}%")
+            battery = drone.get_battery()
+            drone.set_speed(10)  # 设置速度以保持连接
+            print(f"Battery: {battery}%")
         except Exception as e:
             print(f"Keepalive error: {e}")
-        time.sleep(8)
-
+        time.sleep(1)
 
 def tello_live_feed():
     """视频流显示线程"""
