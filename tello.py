@@ -1,4 +1,3 @@
-import inspect
 import threading
 import time
 from functools import wraps
@@ -6,9 +5,11 @@ from functools import wraps
 import cv2
 import numpy as np
 from djitellopy import Tello
+from PIL import Image
 from smolagents import tool
 
 from utils import vision
+from yolo.yolo_grpc_client import YoloGRPCClient
 
 
 def expose_methods_as_tools(*, include: list = None, exclude: list = None):
@@ -92,7 +93,12 @@ def expose_methods_as_tools(*, include: list = None, exclude: list = None):
 class Drone:
     def __init__(self):
         self.drone = Tello()
-        self.drone_lock = threading.Lock()  # 添加无人机操作锁
+        self.start_frame_reader = False
+        self.fr_state = None
+        self.fps = None
+        self.yolo_client = YoloGRPCClient()
+        self.drone_lock = threading.Lock()
+        self.is_take_off = False
 
         with self.drone_lock:
             self.drone.connect()
@@ -101,7 +107,39 @@ class Drone:
             self.drone.streamon()
             self.frame_reader = self.drone.get_frame_read()
 
-    def get_frame(self, sharpen: bool = True) -> np.ndarray:
+    def start_frame_thread(self, fps=30, detect=False):
+        """start a thread to continuously update the drone's video frame"""
+        self.stop_updater = threading.Event()
+        def frame_updater():
+            while not self.stop_updater.is_set():
+                with self.drone_lock:
+                    fr = self.frame_reader.frame
+                
+                fr_bgr = cv2.cvtColor(fr, cv2.COLOR_RGB2BGR)
+                fr_sharpened = vision.sharpen_image(
+                    vision.adjust_exposure(fr_bgr, alpha=1.3, beta=-30)
+                )
+                fr_sharpened_rgb = cv2.cvtColor(fr_sharpened, cv2.COLOR_BGR2RGB)
+                detections = None
+                if detect:
+                    pil_image = Image.fromarray(fr_sharpened_rgb)
+                    detections = self.yolo_client.detect_local(pil_image, conf=0.3)["result"]
+                self.fr_state = (fr_sharpened_rgb, detections)
+                
+                time.sleep(1.0 / fps)
+
+        self.frame_update_thread = threading.Thread(target=frame_updater)
+        self.frame_update_thread.start()
+        self.start_frame_reader = True
+        self.fps = fps
+
+    def stop_frame_thread(self):
+        """Stop the frame update thread."""
+        self.stop_updater.set()
+        self.frame_update_thread.join()
+        self.start_frame_reader = False
+
+    def get_frame(self) -> np.ndarray:
         """Get the current frame from the drone.
 
         Args:
@@ -110,18 +148,61 @@ class Drone:
         Returns:
             np.ndarray: The processed frame as a NumPy array (RGB format).
         """
-        with self.drone_lock:
-            fr = self.frame_reader.frame
+        assert self.start_frame_reader, "Frame reader thread is not started. Call start_frame_thread() first."
+        while self.fr_state is None:
+            time.sleep(0.01)
+        fr, _ = self.fr_state
 
-        if not sharpen:
-            return fr
+        return fr
 
-        fr_bgr = cv2.cvtColor(fr, cv2.COLOR_RGB2BGR)
-        fr_sharpened = vision.sharpen_image(
-            vision.adjust_exposure(fr_bgr, alpha=1.3, beta=-30)
-        )
-        fr_sharpened_rgb = cv2.cvtColor(fr_sharpened, cv2.COLOR_BGR2RGB)
-        return fr_sharpened_rgb
+    def live_feed(self, fps: int = 30, plot_detections: bool = False):
+        """
+        Display live video feed from the drone with optional object detection overlay.
+        Press 'q' to exit and land the drone if it's flying.
+        
+        Args:
+            fps (int): Frames per second for the video feed. Defaults to 30.
+            plot_detections (bool): Whether to plot YOLO detection results on the frame. Defaults to True.
+        """
+        print("Starting live feed... Press 'q' to exit")
+        
+        try:
+            while True:
+                # Get current frame and detections from the frame state
+                if self.fr_state is not None:
+                    frame, detections = self.fr_state
+
+                    if frame is not None:
+                        # Convert RGB to BGR for OpenCV display
+                        display_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                        
+                        # Plot detections if requested and available
+                        if plot_detections:
+                            assert detections is not None, "Detections should not be None when plotting is enabled. You should set detect=True in start_frame_thread()."
+                            from utils.vision import plot_yolo_res
+                            display_frame = plot_yolo_res(display_frame, detections, conf_threshold=0.3)
+                        
+                        # Get battery status for window title
+                        battery = self.get_battery()
+                        window_title = f"Tello Live Feed - Battery: {battery}%"
+                        
+                        # Display the frame
+                        cv2.imshow(window_title, display_frame)
+                
+                # Check for 'q' key press to exit
+                if cv2.waitKey(1000 // fps) & 0xFF == ord('q'):
+                    print("Exiting live feed...")
+                    # Land the drone if it's currently flying
+                    if self.is_take_off:
+                        print("Landing drone...")
+                        self.land()
+                    break
+                    
+        except Exception as e:
+            print(f"Live feed error: {e}")
+        finally:
+            cv2.destroyAllWindows()
+            print("Live feed terminated")
 
     def move_forward(self, distance: int) -> None:
         """
@@ -140,6 +221,7 @@ class Drone:
         """
         with self.drone_lock:
             self.drone.land()
+        self.is_take_off = False
 
     def take_off(self) -> None:
         """
@@ -148,6 +230,7 @@ class Drone:
         with self.drone_lock:
             self.drone.takeoff()
         time.sleep(0.5)
+        self.is_take_off = True
 
     def move_up(self, distance: int) -> None:
         """
@@ -297,6 +380,9 @@ class MockDrone(Drone):
     def __init__(self):
         self.drone = Tello()
         self.drone_lock = threading.Lock()  # 添加无人机操作锁
+        self.is_take_off = False
+        self.start_frame_reader = False
+        self.fr_state = None
         # with self.drone_lock:
         #     self.drone.connect()
 
@@ -311,10 +397,64 @@ class MockDrone(Drone):
         """Mock connect: does nothing."""
         pass
 
-    def get_frame(self, sharpen=False):
+    def get_frame(self):
         """Mock get_frame: returns a blank image as a NumPy array."""
         # Create a black image (height, width, channels)
         return np.zeros((480, 640, 3), dtype=np.uint8)
+    
+    def start_frame_thread(self, fps=30, detect=False):
+        """Mock start_frame_thread: creates a simple frame state."""
+        self.start_frame_reader = True
+        # Create a simple black frame for mock
+        mock_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        self.fr_state = (mock_frame, [] if detect else None)
+    
+    def land(self) -> None:
+        """Mock land: does nothing."""
+        self.is_take_off = False
+        print("Mock drone landed")
+    
+    def take_off(self) -> None:
+        """Mock takeoff: does nothing.""" 
+        self.is_take_off = True
+        print("Mock drone took off")
+    
+    def move_forward(self, distance: int) -> None:
+        """Mock move_forward: does nothing."""
+        print(f"Mock drone moved forward {distance}cm")
+    
+    def move_up(self, distance: int) -> None:
+        """Mock move_up: does nothing."""
+        print(f"Mock drone moved up {distance}cm")
+    
+    def move_down(self, distance: int) -> None:
+        """Mock move_down: does nothing."""
+        print(f"Mock drone moved down {distance}cm")
+    
+    def move_left(self, distance: int) -> None:
+        """Mock move_left: does nothing."""
+        print(f"Mock drone moved left {distance}cm")
+    
+    def move_right(self, distance: int) -> None:
+        """Mock move_right: does nothing."""
+        print(f"Mock drone moved right {distance}cm")
+    
+    def turn_clockwise(self, degrees: int) -> None:
+        """Mock turn_clockwise: does nothing."""
+        print(f"Mock drone turned clockwise {degrees} degrees")
+    
+    def turn_counter_clockwise(self, degrees: int) -> None:
+        """Mock turn_counter_clockwise: does nothing."""
+        print(f"Mock drone turned counter-clockwise {degrees} degrees")
+    
+    def send_rc_control(self, left_right_velocity: int = 0, forward_backward_velocity: int = 0,
+                       up_down_velocity: int = 0, yaw_velocity: int = 0):
+        """Mock send_rc_control: does nothing."""
+        pass
+    
+    def set_speed(self, speed: int) -> None:
+        """Mock set_speed: does nothing."""
+        pass
 
 
 if __name__ == "__main__":

@@ -21,6 +21,8 @@ class MyToolCallingAgent(ToolCallingAgent):
 
 dotenv.load_dotenv()
 
+FPS = 30
+
 # BASE_URL = os.environ.get("BASE_URL", )
 API_KEY = os.environ["OPENROUTER_API_KEY"]
 MODEL_NAME = os.environ.get("MODEL_NAME", "openrouter/anthropic/claude-sonnet-4")
@@ -58,28 +60,7 @@ def keep_drone_alive():
         except Exception as e:
             print(f"Keepalive error: {e}")
         time.sleep(1)
-
-def tello_live_feed():
-    """视频流显示线程"""
-    print("Starting video feed...")
-    try:
-        while True:
-            frame = drone.get_frame(sharpen=False)  # 获取原始帧用于显示
-            # 转换为BGR格式供OpenCV显示
-            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            cv2.imshow("Tello Live Feed", frame_bgr)
-
-            # 按'q'键退出视频流
-            if cv2.waitKey(30) & 0xFF == ord("q"):
-                print("Video feed stopped by user")
-                break
-
-    except Exception as e:
-        print(f"Video feed error: {e}")
-    finally:
-        cv2.destroyAllWindows()
-        print("Video feed thread terminated")
-
+        
 
 # 启动keepalive线程
 keepalive_thread = threading.Thread(target=keep_drone_alive)
@@ -161,4 +142,6 @@ agent_main_thread.daemon = True
 agent_main_thread.start()
 
 if __name__ == "__main__":
-    tello_live_feed()
+    drone.start_frame_thread(fps=15, detect=True)
+    drone.live_feed(15, plot_detections=True)
+    drone.stop_frame_thread()
