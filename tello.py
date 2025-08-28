@@ -87,8 +87,19 @@ def expose_methods_as_tools(*, include: list = None, exclude: list = None):
         "turn_clockwise",
         "turn_counter_clockwise",
         "land",
+        "obj_track",
+        "find_object",
+        "detect_objects",
     ],
-    exclude=["get_frame"],
+    exclude=[
+        "get_frame",
+        "live_feed",
+        "start_frame_thread",
+        "stop_frame_thread",
+        "get_battery",
+        "send_rc_control",
+        "set_speed",
+    ],
 )
 class Drone:
     def __init__(self):
@@ -130,6 +141,8 @@ class Drone:
 
         self.frame_update_thread = threading.Thread(target=frame_updater)
         self.frame_update_thread.start()
+        while self.fr_state is None:
+            time.sleep(0.01)
         self.start_frame_reader = True
         self.fps = fps
 
@@ -149,8 +162,6 @@ class Drone:
             np.ndarray: The processed frame as a NumPy array (RGB format).
         """
         assert self.start_frame_reader, "Frame reader thread is not started. Call start_frame_thread() first."
-        while self.fr_state is None:
-            time.sleep(0.01)
         fr, _ = self.fr_state
 
         return fr
@@ -298,6 +309,31 @@ class Drone:
             self.drone.rotate_counter_clockwise(degrees)
         time.sleep(0.5)
 
+
+    def find_object(self, object_name: str) -> str:
+        """
+        Command the drone to rotate 45° clockwise in place, completing a total of eight rotations. After each rotation, invoke YOLO to check whether the target object is present. If the object is detected, the drone should stop rotating and return a message indicating that the object has been found. If the object is not found after completing all eight rotations, the drone should return a message indicating that the object was not found.
+
+        Args:
+            object_name (str): The name of the object to find.
+
+        Returns:
+            str: A message indicating the result of the search.
+        """
+        assert self.start_frame_reader, "Frame reader thread is not started. Call start_frame_thread() first."
+        for i in range(8):
+            # Rotate 45° clockwise
+            self.turn_clockwise(45)
+            # Wait for frame update
+            time.sleep(0.5)
+            _, detections = self.fr_state
+            if detections:
+                for res in detections:
+                    if object_name in res['name']:
+                        return f"Object '{object_name}' found after {i+1} rotation(s)."
+        return f"Object '{object_name}' not found after 8 rotations."
+    
+    
     def detect_objects(self, conf: float = 0.5) -> str:
         """
         Detect objects in the current frame using YOLO and return a description of the detected objects.
@@ -308,13 +344,14 @@ class Drone:
         Returns:
             str: A message indicating the detected objects.
         """
-        frame = self.get_frame()
-        yolo_results = vision.yolo_detect(frame, conf=conf)
+        assert self.start_frame_reader, "Frame reader thread is not started. Call start_frame_thread() first."
+        _, detections = self.fr_state
+        assert detections is not None, "Detection results are not available. Make sure detect=True in start_frame_thread()."
 
-        if not yolo_results:
+        if not detections:
             return "No objects detected."
 
-        return f"Objects detected: {', '.join([res['name'] for res in yolo_results])}"
+        return f"Objects detected: {', '.join([res['name'] for res in detections])}"
 
     def get_battery(self) -> int:
         """
@@ -340,16 +377,6 @@ class Drone:
         with self.drone_lock:
             self.drone.send_rc_control(left_right_velocity, forward_backward_velocity, 
                                      up_down_velocity, yaw_velocity)
-            
-    def get_battery(self) -> int:
-        """
-        Get the current battery percentage.
-        
-        Returns:
-            int: Battery percentage (0-100)
-        """
-        with self.drone_lock:
-            return self.drone.get_battery()
     
     def set_speed(self, speed: int) -> None:
         """
@@ -360,6 +387,147 @@ class Drone:
         """
         with self.drone_lock:
             self.drone.set_speed(speed)
+    
+    def obj_track(self, object_name: str, track_time: float = 5.0, loss_time: float = 10.0) -> str:
+        """
+        Track a specific object using PID control. 
+        Success when object is continuously visible for track_time seconds.
+        Failure when object is lost for loss_time seconds.
+        
+        Args:
+            object_name (str): The name of the object to track
+            track_time (float): Continuous tracking time required for success (seconds)
+            loss_time (float): Maximum loss time before failure (seconds)
+        
+        Returns:
+            str: Result message indicating success or failure
+        """
+        from utils.pid import PID
+        
+        assert self.start_frame_reader, "Frame reader thread is not started. Call start_frame_thread() first."
+        
+        # PID controller gains (based on obj_track.py)
+        GAINS_YAW = dict(kp=150.0, ki=0.002, kd=15.0)   
+        GAINS_Z   = dict(kp=100.0, ki=0.002, kd=15.0)   # up/down
+        GAINS_FB  = dict(kp=80.0, ki=0.002, kd=15.0)    # forward/backward
+        
+        AREA_DESIRED = 0.2  # Desired area of the object in the frame
+        YAW_DEADBAND = 0.003
+        Z_DEADBAND = 0.003
+        FB_DEADBAND = 0.003
+        
+        # Initialize PID controllers
+        yaw_pid = PID(**GAINS_YAW, out_limit=100.0, i_limit=20.0, deadband=0.03)
+        z_pid = PID(**GAINS_Z, out_limit=100.0, i_limit=20.0, deadband=0.03)
+        fb_pid = PID(**GAINS_FB, out_limit=100.0, i_limit=20.0, deadband=0.03)
+        
+        # Tracking state variables
+        continuous_track_time = 0.0
+        continuous_loss_time = 0.0
+        last_yaw_error = 0.0
+        start_time = time.time()
+        
+        print(f"Starting to track '{object_name}'. Success at {track_time}s continuous tracking, failure at {loss_time}s loss.")
+        
+        try:
+            while True:
+                cur_time = time.time()
+                dt = min(cur_time - start_time, 0.1)  # Cap dt to prevent instability
+                start_time = cur_time
+                
+                _, detections = self.fr_state
+                assert detections is not None, "Detection results are not available. Make sure detect=True in start_frame_thread()."
+                
+                # Find target object
+                bbox = None
+                for det in detections:
+                    if object_name in det['name']:
+                        box = det['box']
+                        bbox = (box["x1"], box["y1"], box["x2"], box["y2"])
+                        break
+                
+                if bbox:
+                    # Object found - reset loss time, accumulate track time
+                    continuous_loss_time = 0.0
+                    continuous_track_time += dt
+                    
+                    # Calculate object center and area (normalized coordinates)
+                    x1, y1, x2, y2 = bbox
+                    cx = (x1 + x2) / 2
+                    cy = (y1 + y2) / 2
+                    area = (x2 - x1) * (y2 - y1)
+                    
+                    # Compute PID errors
+                    err_yaw = cx - 0.5 if abs(cx - 0.5) > YAW_DEADBAND else 0.0
+                    err_z = 0.5 - cy if abs(cy - 0.5) > Z_DEADBAND else 0.0  
+                    err_fb = AREA_DESIRED - area if abs(area - AREA_DESIRED) > FB_DEADBAND else 0.0
+                    
+                    # Update last yaw error for future reference
+                    last_yaw_error = err_yaw
+                    
+                    # Calculate PID outputs
+                    yaw_output = yaw_pid.step(err_yaw, dt=dt) if err_yaw != 0.0 else 0
+                    z_output = z_pid.step(err_z, dt=dt) if err_z != 0.0 else 0
+                    fb_output = fb_pid.step(err_fb, dt=dt) if err_fb != 0.0 else 0
+                    
+                    # Send control commands
+                    if self.is_take_off:
+                        self.send_rc_control(left_right_velocity=0,
+                                           forward_backward_velocity=int(fb_output),
+                                           up_down_velocity=int(z_output),
+                                           yaw_velocity=int(yaw_output))
+                    
+                    print(f"Tracking {object_name}: center=({cx:.3f},{cy:.3f}), area={area:.3f}, track_time={continuous_track_time:.1f}s")
+                    
+                    # Check for success condition
+                    if continuous_track_time >= track_time:
+                        # Stop the drone
+                        if self.is_take_off:
+                            self.send_rc_control(0, 0, 0, 0)
+                        return f"track {object_name} for {continuous_track_time:.1f} s, success"
+                
+                else:
+                    # Object lost - reset track time, accumulate loss time
+                    continuous_track_time = 0.0
+                    continuous_loss_time += dt
+                    
+                    # Use last yaw error to determine rotation direction
+                    if abs(last_yaw_error) > 0.1:  # Only rotate if we had significant yaw error
+                        yaw_velocity = 20 if last_yaw_error > 0 else -20
+                    else:
+                        yaw_velocity = 20  # Default clockwise rotation
+                    
+                    # Send rotation command to search for object
+                    if self.is_take_off:
+                        self.send_rc_control(left_right_velocity=0,
+                                           forward_backward_velocity=0,
+                                           up_down_velocity=0,
+                                           yaw_velocity=yaw_velocity)
+                    
+                    print(f"Lost {object_name}, searching... loss_time={continuous_loss_time:.1f}s, rotating={'right' if yaw_velocity > 0 else 'left'}")
+                    
+                    # Check for failure condition
+                    if continuous_loss_time >= loss_time:
+                        # Stop the drone
+                        if self.is_take_off:
+                            self.send_rc_control(0, 0, 0, 0)
+                        return f"loss {object_name} for {continuous_loss_time:.1f} s, failed"
+                
+                # Small delay to prevent excessive CPU usage
+                time.sleep(1.0 / self.fps if self.fps else 0.03)  # Use self.fps or default ~30 FPS
+                
+        except KeyboardInterrupt:
+            print("Tracking interrupted by user")
+            if self.is_take_off:
+                self.send_rc_control(0, 0, 0, 0)
+                self.land()
+            return f"tracking {object_name} interrupted"
+        except Exception as e:
+            print(f"Tracking error: {e}")
+            if self.is_take_off:
+                self.send_rc_control(0, 0, 0, 0)
+                self.land()
+            return f"tracking {object_name} failed due to error: {e}"
 
 
 @expose_methods_as_tools(
@@ -373,6 +541,9 @@ class Drone:
         "turn_clockwise",
         "turn_counter_clockwise",
         "land",
+        "obj_track",
+        "find_object",
+        "detect_objects",
     ],
     exclude=["get_frame"],
 )
@@ -455,6 +626,21 @@ class MockDrone(Drone):
     def set_speed(self, speed: int) -> None:
         """Mock set_speed: does nothing."""
         pass
+    
+    def obj_track(self, object_name: str, track_time: float = 5.0, loss_time: float = 10.0) -> str:
+        """Mock obj_track: simulates tracking behavior."""
+        print(f"Mock drone tracking '{object_name}' for {track_time}s success, {loss_time}s failure")
+        time.sleep(1)  # Simulate some tracking time
+        return f"track {object_name} for {track_time} s, success (mock)"
+    
+    def find_object(self, object_name: str) -> str:
+        """Mock find_object: simulates object search."""
+        print(f"Mock drone searching for '{object_name}'")
+        return f"Object '{object_name}' found after 1 rotation(s). (mock)"
+    
+    def detect_objects(self, conf: float = 0.5) -> str:
+        """Mock detect_objects: returns mock detection results."""
+        return "Objects detected: person, chair (mock)"
 
 
 if __name__ == "__main__":
